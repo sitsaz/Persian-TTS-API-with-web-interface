@@ -20,7 +20,7 @@ A simple and open-source Text-to-Speech API with Persian (Farsi) language suppor
 
 ```bash
 # Clone the repository
-git clone https://github.com/YourUsername/persian-tts-api.git
+git clone https://github.com/sitsaz/persian-tts-api.git
 cd persian-tts-api
 
 # Make the deployment script executable
