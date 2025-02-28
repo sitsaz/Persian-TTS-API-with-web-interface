@@ -70,13 +70,21 @@ chown -R "$CURRENT_USER:$CURRENT_USER" "$TTS_SERVER_DIR"
 info "Installing TTS and dependencies..."
 sudo -u "$CURRENT_USER" bash << EOF
 source "$TTS_SERVER_DIR/venv/bin/activate"
-pip install -U pip setuptools wheel
-pip install TTS flask
+pip install --upgrade pip setuptools wheel
+# Disable hash checking to avoid errors with package updates
+pip install --no-cache-dir TTS flask
+EOF
 
-# Download Persian TTS model
+# Download model directly in the script
 info "Downloading Persian TTS model..."
+sudo -u "$CURRENT_USER" bash << EOF
+source "$TTS_SERVER_DIR/venv/bin/activate"
 mkdir -p "$TTS_SERVER_DIR/models"
-tts --download_path="$TTS_SERVER_DIR/models" --model_name="tts_models/fa/cv/tacotron2-DDC"
+python3 -c "
+from TTS.utils.manage import ModelManager
+model_name = 'tts_models/fa/cv/tacotron2-DDC'
+ModelManager().download_model(model_name)
+"
 EOF
 
 info "Creating TTS server script..."
@@ -213,7 +221,7 @@ cat > "$WEB_DIR/index.php" << 'PHP_INTERFACE'
         }
         #audioContainer {
             margin-top: 20px;
-            text-align: center;
+            text-align: center;,
             display: none;
         }
         .loader {
