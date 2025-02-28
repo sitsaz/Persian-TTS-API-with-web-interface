@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Persian TTS API with PHP Interface - Deployment Script
-# This script automates the installation of a Persian TTS API server and web interface
+# Persian TTS API with PHP Interface - Deployment Script for WSL
+# This script automates the installation of a Persian TTS API server and web interface on WSL
 
 # Exit on error
 set -e
@@ -31,12 +31,22 @@ if [ "$EUID" -ne 0 ]; then
     error "Please run this script with sudo or as root"
 fi
 
-# Get the current non-root user
+# WSL-specific check
+if ! grep -q Microsoft /proc/version && ! grep -q microsoft /proc/version; then
+    warn "This doesn't appear to be a WSL environment. Some features may not work as expected."
+fi
+
+# Get the current non-root user (different approach for WSL)
 if [ -n "$SUDO_USER" ]; then
     CURRENT_USER="$SUDO_USER"
 else
-    CURRENT_USER="$(logname || echo $USER)"
-    if [ "$CURRENT_USER" = "root" ]; then
+    # On WSL, sometimes logname doesn't work properly
+    CURRENT_USER=$(who am i | awk '{print $1}')
+    # Fallback if the above doesn't work
+    if [ -z "$CURRENT_USER" ] || [ "$CURRENT_USER" = "root" ]; then
+        CURRENT_USER=$(grep -v "root\|daemon\|bin\|sys\|sync" /etc/passwd | grep "/home" | head -1 | cut -d: -f1)
+    fi
+    if [ -z "$CURRENT_USER" ] || [ "$CURRENT_USER" = "root" ]; then
         error "Cannot determine non-root user. Please run with sudo instead of as root directly"
     fi
 fi
@@ -58,7 +68,13 @@ WEB_DIR="/var/www/html/tts"
 
 info "Installing system dependencies..."
 apt update
-apt install -y python3-pip python3-dev python3-venv ffmpeg libsndfile1 git apache2 php libapache2-mod-php php-curl
+# Added language-pack-fa for Farsi language support
+apt install -y python3-pip python3-dev python3-venv ffmpeg libsndfile1 git apache2 php libapache2-mod-php php-curl language-pack-fa
+
+# Ensure proper locale configuration for Farsi
+info "Configuring locale for Farsi support..."
+locale-gen fa_IR.UTF-8
+update-locale LANG=fa_IR.UTF-8 LC_ALL=fa_IR.UTF-8
 
 info "Setting up TTS server directory..."
 mkdir -p "$TTS_SERVER_DIR"
@@ -94,11 +110,24 @@ from TTS.api import TTS
 import os
 import uuid
 import time
+import sys
+import locale
+
+# Set locale to fa_IR.UTF-8 for Persian support
+try:
+    locale.setlocale(locale.LC_ALL, 'fa_IR.UTF-8')
+except locale.Error:
+    print("Warning: fa_IR.UTF-8 locale not available. Persian text may not render correctly.")
 
 app = Flask(__name__)
 
 # Initialize TTS with Persian model
-tts = TTS(model_name="tts_models/fa/cv/tacotron2-DDC", progress_bar=False)
+try:
+    tts = TTS(model_name="tts_models/fa/cv/tacotron2-DDC", progress_bar=False)
+    print("Successfully loaded Persian TTS model")
+except Exception as e:
+    print(f"Error loading TTS model: {e}", file=sys.stderr)
+    sys.exit(1)
 
 AUDIO_DIR = "audio_files"
 os.makedirs(AUDIO_DIR, exist_ok=True)
@@ -128,6 +157,7 @@ def generate_speech():
         })
         
     except Exception as e:
+        print(f"Error generating speech: {e}", file=sys.stderr)
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/audio/<filename>', methods=['GET'])
@@ -149,14 +179,24 @@ def cleanup_old_files():
             os.unlink(filepath)
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=PORT_PLACEHOLDER)
+    # Add improved error handling for port binding issues (common in WSL)
+    try:
+        app.run(host='0.0.0.0', port=PORT_PLACEHOLDER)
+    except OSError as e:
+        if "Address already in use" in str(e):
+            print(f"Error: Port {PORT_PLACEHOLDER} is already in use. Please choose a different port.")
+            sys.exit(1)
+        else:
+            raise
 PYTHON_SCRIPT
 
 # Replace the port placeholder
 sed -i "s/PORT_PLACEHOLDER/$TTS_PORT/g" "$TTS_SERVER_DIR/tts_server.py"
 
 info "Creating systemd service for TTS API..."
-cat > /etc/systemd/system/persian-tts.service << EOF
+# Check if systemd is available (WSL1 doesn't have systemd)
+if pidof systemd >/dev/null; then
+    cat > /etc/systemd/system/persian-tts.service << EOF
 [Unit]
 Description=Persian TTS API Service
 After=network.target
@@ -167,10 +207,32 @@ WorkingDirectory=$TTS_SERVER_DIR
 ExecStart=$TTS_SERVER_DIR/venv/bin/python $TTS_SERVER_DIR/tts_server.py
 Restart=on-failure
 Environment=PYTHONUNBUFFERED=1
+Environment=LANG=fa_IR.UTF-8
+Environment=LC_ALL=fa_IR.UTF-8
 
 [Install]
 WantedBy=multi-user.target
 EOF
+    systemctl daemon-reload
+    systemctl enable persian-tts
+    systemctl start persian-tts
+else
+    # Create a startup script for WSL environments without systemd
+    warn "Systemd not detected (common in WSL1). Creating startup script instead."
+    cat > "$CURRENT_USER_HOME/start-persian-tts.sh" << EOF
+#!/bin/bash
+source "$TTS_SERVER_DIR/venv/bin/activate"
+cd "$TTS_SERVER_DIR"
+export LANG=fa_IR.UTF-8
+export LC_ALL=fa_IR.UTF-8
+python tts_server.py
+EOF
+    chmod +x "$CURRENT_USER_HOME/start-persian-tts.sh"
+    chown "$CURRENT_USER:$CURRENT_USER" "$CURRENT_USER_HOME/start-persian-tts.sh"
+    
+    info "To start the TTS server manually, run: $CURRENT_USER_HOME/start-persian-tts.sh"
+    info "To run it in the background: nohup $CURRENT_USER_HOME/start-persian-tts.sh > $CURRENT_USER_HOME/tts-server.log 2>&1 &"
+fi
 
 info "Setting up web interface..."
 mkdir -p "$WEB_DIR"
@@ -186,7 +248,7 @@ cat > "$WEB_DIR/index.php" << 'PHP_INTERFACE'
     <title>Persian Text-to-Speech</title>
     <style>
         body {
-            font-family: Arial, Tahoma, sans-serif;
+            font-family: Tahoma, Arial, sans-serif;
             max-width: 800px;
             margin: 0 auto;
             padding: 20px;
@@ -221,7 +283,7 @@ cat > "$WEB_DIR/index.php" << 'PHP_INTERFACE'
         }
         #audioContainer {
             margin-top: 20px;
-            text-align: center;,
+            text-align: center;
             display: none;
         }
         .loader {
@@ -366,6 +428,7 @@ try {
 ?>
 PHP_HANDLER
 
+# For WSL, Apache configuration may need adjustments
 info "Setting up Apache configuration..."
 cat > /etc/apache2/sites-available/tts.conf << EOF
 <VirtualHost *:80>
@@ -390,20 +453,30 @@ chmod -R 755 "$WEB_DIR"
 # Enable the site in Apache
 a2ensite tts.conf
 
-info "Configuring firewall..."
+# For WSL, check if Apache can be started
+info "Configuring and starting Apache..."
+if ! service apache2 status >/dev/null 2>&1; then
+    warn "Apache may not start automatically in WSL. You might need to start it manually."
+    service apache2 start || warn "Failed to start Apache. Try running 'sudo service apache2 start' manually."
+else
+    service apache2 restart || warn "Failed to restart Apache. Try running 'sudo service apache2 restart' manually."
+fi
+
+# WSL-specific network advice
+info "WSL-specific network notes:"
+info "1. In WSL, you may need to access services using the Windows host IP instead of localhost"
+info "2. You may need to configure Windows Defender Firewall to allow traffic on ports 80 and $TTS_PORT"
+
+# Skip UFW for WSL as it's not typically used there
 if command -v ufw &> /dev/null; then
+    info "Configuring firewall..."
     ufw allow 80/tcp
     ufw allow $TTS_PORT/tcp
     info "Firewall rules added for ports 80 and $TTS_PORT"
 else
-    warn "UFW firewall not detected. Please manually open ports 80 and $TTS_PORT if needed"
+    info "UFW firewall not detected. This is normal for WSL."
+    info "Please ensure Windows Firewall allows connections to ports 80 and $TTS_PORT if needed."
 fi
-
-info "Starting services..."
-systemctl daemon-reload
-systemctl enable persian-tts
-systemctl start persian-tts
-systemctl restart apache2
 
 info "Creating test script..."
 cat > "$CURRENT_USER_HOME/test-tts.sh" << EOF
@@ -427,8 +500,18 @@ Web Interface: http://$SERVER_DOMAIN/tts/
 
 Test the API with: $CURRENT_USER_HOME/test-tts.sh
 
+WSL-SPECIFIC NOTES:
+1. If using WSL1, use the start script to run the server:
+   $CURRENT_USER_HOME/start-persian-tts.sh
+
+2. Access the web interface using your Windows IP address:
+   http://<windows-ip>/tts/
+
+3. For port connectivity issues, ensure Windows Firewall 
+   allows connections to these ports.
+
 If you encounter any issues:
-1. Check TTS server logs: journalctl -u persian-tts
+1. Check logs in $CURRENT_USER_HOME/tts-server.log (if using start script)
 2. Check Apache logs: tail -f /var/log/apache2/tts_error.log
 =====================================================
 "
