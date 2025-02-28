@@ -1,0 +1,23 @@
+# Python virtual environment
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Audio files
+audio_files/
+*.wav
+
+# Logs
+*.log
+
+# Environment variables
+.env
+
+# Model files (too large for GitHub)
+models/
